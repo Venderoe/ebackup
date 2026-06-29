@@ -1,19 +1,20 @@
 package dev.espi.ebackup;
 
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bstats.bukkit.Metrics;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabExecutor;
 import org.bukkit.configuration.InvalidConfigurationException;
-import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
-import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.Listener;
-import org.bukkit.entity.Player;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
 import java.io.IOException;
@@ -40,6 +41,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class eBackup extends JavaPlugin implements CommandExecutor, Listener, TabExecutor {
 
+    private static eBackup instance;
+
     // lock
     AtomicBoolean isInBackup = new AtomicBoolean(false);
     AtomicBoolean isInUpload = new AtomicBoolean(false);
@@ -60,7 +63,7 @@ public class eBackup extends JavaPlugin implements CommandExecutor, Listener, Ta
     List<String> filesToIgnore;
     List<File> ignoredFiles = new ArrayList<>();
 
-    BukkitTask bukkitCronTask = null;
+    ScheduledTask bukkitCronTask = null;
 
     // track if players were on
     AtomicBoolean playersWereOnSinceLastBackup = new AtomicBoolean(false);
@@ -127,7 +130,7 @@ public class eBackup extends JavaPlugin implements CommandExecutor, Listener, Ta
 
         // start cron task
         CronUtil.checkCron();
-        bukkitCronTask = Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
+        bukkitCronTask = SchedulerUtil.runAsyncTimer(() -> {
             if (CronUtil.run()) {
                 if (isInBackup.get()) {
                     getLogger().warning("A backup was scheduled to happen now, but a backup was detected to be in progress. Skipping...");
@@ -136,8 +139,13 @@ public class eBackup extends JavaPlugin implements CommandExecutor, Listener, Ta
                 } else {
                     BackupUtil.doBackup(true);
 
-                    if (Bukkit.getServer().getOnlinePlayers().size() == 0) {
-                        playersWereOnSinceLastBackup.set(false);
+                    try {
+                        if (SchedulerUtil.callGlobal(() -> Bukkit.getServer().getOnlinePlayers().size()) == 0) {
+                            playersWereOnSinceLastBackup.set(false);
+                        }
+                    } catch (Exception e) {
+                        getLogger().warning("Unable to check online player count after backup.");
+                        e.printStackTrace();
                     }
                 }
             }
@@ -146,6 +154,7 @@ public class eBackup extends JavaPlugin implements CommandExecutor, Listener, Ta
 
     @Override
     public void onEnable() {
+        instance = this;
         getLogger().info("Initializing eBackup...");
 
         try {
@@ -165,7 +174,7 @@ public class eBackup extends JavaPlugin implements CommandExecutor, Listener, Ta
         if (isInBackup.get() || isInUpload.get()) {
             getLogger().info("Any running tasks (uploads or backups) will now be cancelled due to the server shutdown.");
         }
-        Bukkit.getScheduler().cancelTasks(this);
+        SchedulerUtil.cancelTasks(this);
 
         getLogger().info("Disabled eBackup!");
     }
@@ -197,10 +206,10 @@ public class eBackup extends JavaPlugin implements CommandExecutor, Listener, Ta
                     sender.sendMessage(ChatColor.RED + "A backup is currently in progress!");
                 } else {
                     sender.sendMessage(ChatColor.GRAY + "Starting backup (check console logs for details)...");
-                    Bukkit.getScheduler().runTaskAsynchronously(getPlugin(), () -> {
+                    SchedulerUtil.runAsync(() -> {
                         BackupUtil.doBackup(true);
                         if (sender instanceof Player) {
-                            sender.sendMessage(ChatColor.GRAY + "Finished local backup!");
+                            SchedulerUtil.sendMessage(sender, ChatColor.GRAY + "Finished local backup!");
                         }
                     });
                 }
@@ -210,9 +219,9 @@ public class eBackup extends JavaPlugin implements CommandExecutor, Listener, Ta
                     sender.sendMessage(ChatColor.RED + "A backup is currently in progress!");
                 } else {
                     sender.sendMessage(ChatColor.GRAY + "Starting backup (check console logs for details)...");
-                    Bukkit.getScheduler().runTaskAsynchronously(getPlugin(), () -> {
+                    SchedulerUtil.runAsync(() -> {
                         BackupUtil.doBackup(false);
-                        sender.sendMessage(ChatColor.GRAY + "Finished!");
+                        SchedulerUtil.sendMessage(sender, ChatColor.GRAY + "Finished!");
                     });
                 }
                 break;
@@ -264,7 +273,7 @@ public class eBackup extends JavaPlugin implements CommandExecutor, Listener, Ta
     }
 
     public static eBackup getPlugin() {
-        return (eBackup) Bukkit.getPluginManager().getPlugin("eBackup");
+        return instance;
     }
 
 }

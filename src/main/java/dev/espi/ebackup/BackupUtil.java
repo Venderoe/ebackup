@@ -10,11 +10,8 @@ import java.io.*;
 import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 /*
    Copyright 2020 EspiDev
@@ -60,6 +57,7 @@ public class BackupUtil {
     // run async please
     public static void doBackup(boolean uploadToServer) {
         List<File> tempIgnore = new ArrayList<>();
+        Map<World, Boolean> autoSaveStates = new HashMap<>();
         eBackup.getPlugin().getLogger().info("Starting backup...");
 
         // do not backup when plugin is disabled
@@ -97,8 +95,17 @@ public class BackupUtil {
             Set<String> visitedFiles = new HashSet<>();
 
             // backup worlds first
-            for (World w : Bukkit.getWorlds()) {
-                File worldFolder = w.getWorldFolder();
+            List<WorldBackupTarget> worlds = SchedulerUtil.callGlobal(() -> {
+                List<WorldBackupTarget> targets = new ArrayList<>();
+                for (World world : Bukkit.getWorlds()) {
+                    targets.add(new WorldBackupTarget(world, world.getName(), world.getWorldFolder()));
+                }
+                return targets;
+            });
+
+            for (WorldBackupTarget target : worlds) {
+                World w = target.world;
+                File worldFolder = target.worldFolder;
 
                 String worldPath = Paths.get(currentWorkingDirectory.toURI()).relativize(Paths.get(worldFolder.toURI())).toString();
                 if (worldPath.endsWith("/.")) {// 1.16 world folders end with /. for some reason
@@ -116,22 +123,21 @@ public class BackupUtil {
                 }
                 if (skip) continue;
 
-                // manually trigger world save (needs to be run sync)
-                AtomicBoolean saved = new AtomicBoolean(false);
-                Bukkit.getScheduler().runTask(eBackup.getPlugin(), () -> {
+                // manually trigger world save and pause autosave on the global region
+                boolean previousAutoSave = SchedulerUtil.callGlobal(() -> {
+                    boolean autoSave = w.isAutoSave();
                     w.save();
-                    saved.set(true);
+                    w.setAutoSave(false);
+                    return autoSave;
                 });
+                autoSaveStates.put(w, previousAutoSave);
 
-                // wait until world save is finished
-                while (!saved.get()) Thread.sleep(500);
-
-                w.setAutoSave(false); // make sure autosave doesn't screw everything over
-
-                eBackup.getPlugin().getLogger().info("Backing up world " + w.getName() + " " + worldPath + "...");
+                eBackup.getPlugin().getLogger().info("Backing up world " + target.worldName + " " + worldPath + "...");
                 zipFile(worldFolder, worldPath, zipOut, visitedFiles);
 
-                w.setAutoSave(true);
+                boolean restoreAutoSave = previousAutoSave;
+                SchedulerUtil.runGlobalAndWait(() -> w.setAutoSave(restoreAutoSave));
+                autoSaveStates.remove(w);
 
                 // ignore in dfs
                 tempIgnore.add(worldFolder);
@@ -152,8 +158,15 @@ public class BackupUtil {
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
-            for (World w : Bukkit.getWorlds()) {
-                w.setAutoSave(true);
+            for (Map.Entry<World, Boolean> entry : autoSaveStates.entrySet()) {
+                try {
+                    World world = entry.getKey();
+                    boolean restoreAutoSave = entry.getValue();
+                    SchedulerUtil.runGlobalAndWait(() -> world.setAutoSave(restoreAutoSave));
+                } catch (Exception e) {
+                    eBackup.getPlugin().getLogger().warning("Unable to restore autosave state for a world.");
+                    e.printStackTrace();
+                }
             }
             // restore tempignore
             for (File f : tempIgnore) {
@@ -190,7 +203,7 @@ public class BackupUtil {
         }
 
         eBackup.getPlugin().getLogger().info(String.format("Starting upload of %s to %s server...", fileName, isSFTP ? "SFTP" : "FTP"));
-        Bukkit.getScheduler().runTaskAsynchronously(eBackup.getPlugin(), () -> {
+        SchedulerUtil.runAsync(() -> {
             try {
                 eBackup.getPlugin().isInUpload.set(true);
 
@@ -296,13 +309,25 @@ public class BackupUtil {
 
     private static void deleteAfterUpload(File f) {
         if (eBackup.getPlugin().deleteAfterUpload) {
-            Bukkit.getScheduler().runTaskAsynchronously(eBackup.getPlugin(), () -> {
+            SchedulerUtil.runAsync(() -> {
                 if (f.delete()) {
                     eBackup.getPlugin().getLogger().info("Successfully deleted " + f.getName() + " after upload.");
                 } else {
                     eBackup.getPlugin().getLogger().warning("Unable to delete " + f.getName() + " after upload.");
                 }
             });
+        }
+    }
+
+    private static class WorldBackupTarget {
+        private final World world;
+        private final String worldName;
+        private final File worldFolder;
+
+        private WorldBackupTarget(World world, String worldName, File worldFolder) {
+            this.world = world;
+            this.worldName = worldName;
+            this.worldFolder = worldFolder;
         }
     }
 
