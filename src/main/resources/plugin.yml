@@ -4,7 +4,7 @@ description: A simple and stable backup plugin.
 author: EspiDev
 
 main: dev.espi.ebackup.eBackup
-api-version: 1.13
+api-version: 26.3
 folia-supported: true
 
 commands:
